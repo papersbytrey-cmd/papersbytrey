@@ -17,6 +17,10 @@ VOICE, SPEED = os.environ.get("VOICE", "bm_fable"), float(os.environ.get("SPEED"
 SR, FPS = 48000, 30
 LEAD, GAP, TAIL = 0.35, 0.18, 1.6
 
+# focus point (x, y as fractions of the photo) the camera drifts around
+PHOTO_FOCUS = {"clock": (0.5, 0.3), "board": (0.45, 0.4), "night": (0.6, 0.55), "results": (0.5, 0.55),
+               "invig": (0.5, 0.55), "stressed": (0.55, 0.45), "celebrate": (0.55, 0.45), "paper": (0.45, 0.4)}
+
 _kokoro = None
 def tts(text):
     global _kokoro
@@ -69,49 +73,49 @@ def lowpass(x, cutoff):
     return lfilter([1 - a], [1, -a], x)
 
 def music(dur, seed=0, dark=False):
-    rng = np.random.default_rng(seed)
-    n = int(dur * SR); t = np.arange(n) / SR
+    """Clean underscore: soft pad + felt-piano arpeggio + low pulse, light reverb. No noise sources."""
+    n = int(dur * SR)
     out = np.zeros(n)
-    bpm = 96; beat = 60 / bpm; bar = beat * 4
+    bpm = 84; beat = 60 / bpm; bar = beat * 4
     prog = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]]  # Am F C G
     if dark:
         prog = [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]]  # Am F Dm E
-    # pad
     for bi in range(int(dur / bar) + 1):
         ch = prog[bi % 4]
-        s0, s1 = int(bi * bar * SR), min(n, int((bi + 1) * bar * SR + 0.3 * SR))
+        s0 = int(bi * bar * SR)
         if s0 >= n: break
-        tt = np.arange(s1 - s0) / SR
-        env = np.minimum(1, tt / 0.6) * np.minimum(1, (s1 - s0 - np.arange(s1 - s0)) / SR / 0.4)
-        sig = np.zeros(s1 - s0)
-        for m in ch + [ch[0] - 12]:
-            for det in (-0.08, 0.08):
-                f = note(m + det)
-                sig += 2 * ((tt * f) % 1) - 1
-        out[s0:s1] += lowpass(sig, 900) * env * 0.05
-        # plucked arpeggio, 8ths
-        arp = ch + [ch[1] + 12, ch[2] + 12]
-        for k in range(8):
-            ps = s0 + int(k * beat / 2 * SR)
+        ln = min(n - s0, int((bar + 1.0) * SR)); tt = np.arange(ln) / SR
+        env = np.minimum(1, tt / 1.2) * np.clip((bar + 1.0 - tt) / 1.0, 0, 1)
+        pad = np.zeros(ln)
+        for m in [ch[0] - 12] + ch:
+            f = note(m)
+            pad += np.sin(2 * np.pi * f * tt) + 0.25 * np.sin(2 * np.pi * 2 * f * tt + 0.3)
+        out[s0:s0 + ln] += pad * env * 0.035
+        # felt piano: quarter-note arpeggio an octave up, soft attack
+        arp = [ch[0], ch[2], ch[1] + 12, ch[2]]
+        for k in range(4):
+            ps = s0 + int(k * beat * SR)
             if ps >= n: break
-            m = arp[[0, 2, 1, 3, 2, 4, 3, 2][k]] + 12
-            ln = min(int(0.45 * SR), n - ps)
-            tt2 = np.arange(ln) / SR
-            out[ps:ps + ln] += np.sin(2 * np.pi * note(m) * tt2) * np.exp(-tt2 * 9) * 0.07
-    # sub pulse + hats (enter after 2 bars)
-    for bt in range(int(dur / beat) + 1):
-        ps = int(bt * beat * SR)
-        if ps >= n: break
-        if bt >= 8 and bt % 2 == 0:
-            ln = min(int(0.35 * SR), n - ps); tt2 = np.arange(ln) / SR
-            out[ps:ps + ln] += np.sin(2 * np.pi * (45 + 60 * np.exp(-tt2 * 30)) * tt2) * np.exp(-tt2 * 8) * 0.22
-        if bt >= 8:
-            for off in (0, 0.5):
-                hs = ps + int(off * beat * SR); ln = min(int(0.05 * SR), n - hs)
-                if ln <= 0: continue
-                hn = rng.standard_normal(ln); hn = hn - lowpass(hn, 7000)
-                out[hs:hs + ln] += hn * np.exp(-np.arange(ln) / SR * 80) * (0.03 if off else 0.045)
-    return out
+            m = arp[k] + 12; f = note(m)
+            pl = min(int(1.6 * SR), n - ps); t2 = np.arange(pl) / SR
+            e = np.minimum(1, t2 / 0.008) * np.exp(-t2 * 2.8)
+            tone = np.sin(2 * np.pi * f * t2) + 0.35 * np.exp(-t2 * 3) * np.sin(2 * np.pi * 2 * f * t2) + 0.1 * np.exp(-t2 * 6) * np.sin(2 * np.pi * 3 * f * t2)
+            out[ps:ps + pl] += tone * e * (0.07 if k == 0 else 0.05)
+        # low pulse from bar 3 on
+        if bi >= 2:
+            for k in (0, 2):
+                ps = s0 + int(k * beat * SR)
+                if ps >= n: continue
+                pl = min(int(0.6 * SR), n - ps); t2 = np.arange(pl) / SR
+                out[ps:ps + pl] += np.sin(2 * np.pi * 55 * t2) * np.minimum(1, t2 / 0.02) * np.exp(-t2 * 6) * 0.12
+    # small smooth reverb
+    ir_t = np.arange(int(1.8 * SR)) / SR
+    ir = np.random.default_rng(seed).standard_normal(len(ir_t)) * np.exp(-ir_t * 3.5)
+    ir = lowpass(ir, 3000); ir /= np.abs(ir).sum() / 6
+    from scipy.signal import fftconvolve
+    wet = fftconvolve(out, ir)[:n]
+    return out * 0.8 + wet * 0.35
+
 
 def whoosh(rng, dur=0.45):
     n = int(dur * SR); x = rng.standard_normal(n)
@@ -120,7 +124,7 @@ def whoosh(rng, dur=0.45):
     y = np.zeros(n); cut = 300 + 4000 * tt
     for i in range(0, n, 512):  # sweep a one-pole low-pass
         y[i:i + 512] = lowpass(x[i:i + 512], cut[i])
-    return y * env * 0.5
+    return lowpass(y, 2500) * env * 0.35
 
 def pop():
     n = int(0.12 * SR); tt = np.arange(n) / SR
@@ -157,9 +161,10 @@ def build(name, spec, render=True):
         d = len(audio) / SR
         start = t
         end = start + d + (TAIL if b["shot"] == "end" else GAP)
-        if b["shot"] != prev_shot or b.get("cut"):
+        shot_id = b.get("img") or b["shot"]
+        if shot_id != prev_shot or b.get("cut"):
             key += 1
-        prev_shot = b["shot"]
+        prev_shot = shot_id
         st = dict(b.get("state", {}))
         if st.get("flip") == "beat":
             st["flip"] = [start + 0.15, start + 1.0]
@@ -168,6 +173,12 @@ def build(name, spec, render=True):
         beat = {"start": start, "end": end, "shot": b["shot"], "shotKey": f"{b['shot']}-{key}",
                 "mode": b.get("mode", "day"), "state": st,
                 "words": word_times(b.get("cap", b["say"]), audio, start)}
+        if b.get("img"):
+            beat["img"] = b["img"]
+            beat["shotKey"] = f"{b['img']}-{key}"
+            fx, fy = PHOTO_FOCUS.get(b["img"], (0.5, 0.5))
+            zin = key % 2 == 1
+            beat["kb"] = {"z": [1.03, 1.16] if zin else [1.16, 1.04], "x": [fx, fx + (0.03 if zin else -0.03)], "y": [fy, fy - 0.02]}
         if "card" in b: beat["card"] = b["card"]
         if "mascot" in b: beat["mascot"] = b["mascot"]
         beats.append(beat); voice_clips.append((start, audio))
@@ -177,7 +188,8 @@ def build(name, spec, render=True):
     beats[0]["start"] = 0.0
     duration = beats[-1]["end"]
     hook_until = min(beats[0]["end"], 3.2) if spec.get("hook") else 0
-    tl = {"fps": FPS, "duration": duration, "beats": beats,
+    photos = sorted({x["img"] for x in beats if x.get("img")})
+    tl = {"photos": photos, "fps": FPS, "duration": duration, "beats": beats,
           "hook": {"text": spec["hook"], "until": hook_until} if spec.get("hook") else None,
           "paper": spec.get("paper", {"qnum": "14", "lines": Q_PARAS}),
           "grade": spec.get("grade", 8), "end": spec.get("end", {})}
@@ -206,8 +218,8 @@ def build(name, spec, render=True):
             k = b["start"]
             while k < b["end"]: add(sfx, tick(), k); k += 0.5
         if b["shot"] == "end": add(sfx, ding(), b["start"] + 0.05)
-    mix = vo + mus * duck * fade * 0.55 + sfx
-    mix = np.tanh(mix * 1.1) / np.tanh(1.1)
+    mix = vo + mus * duck * fade * 0.5 + sfx
+    mix *= 0.95 / max(1e-6, np.abs(mix).max())
     wav = os.path.join(BUILD, f"{name}.wav")
     sf.write(wav, np.stack([mix, mix], 1).astype(np.float32), SR)
     print(f"{name}: {duration:.1f}s, {len(beats)} beats", flush=True)
@@ -217,7 +229,7 @@ def build(name, spec, render=True):
     subprocess.run(["node", os.path.join(HERE, "render.mjs"), tl_path, silent], check=True)
     final = os.path.join(HERE, "videos", f"papersbytrey-{name}.mp4")
     os.makedirs(os.path.dirname(final), exist_ok=True)
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", wav, "-c:v", "copy", "-af", "loudnorm=I=-14:TP=-1.5:LRA=9", "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", wav, "-c:v", "copy", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89", "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
                     "-shortest", "-movflags", "+faststart", final], check=True)
     print("wrote", final, flush=True)
 

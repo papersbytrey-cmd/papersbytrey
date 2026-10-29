@@ -775,8 +775,31 @@ let heroPaper = null, stationery = null, notes = null, paperStack = null, envelo
 let lastShotKey = null, shotChangeT = -10;
 const cardFirstSeen = {};
 
-window.init = (timeline) => {
+const photos = {};
+function loadPhoto(name) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => { photos[name] = im; res(); };
+    im.onerror = () => rej(new Error('missing photo ' + name));
+    im.src = `photos/${name}.jpg`;
+  });
+}
+// Ken Burns move over a still photo: kb = {z:[from,to], x:[from,to], y:[from,to]} (focus point 0..1)
+function drawPhoto(g, name, p, t, kb, since) {
+  const im = photos[name];
+  const lerp = (r, d) => (r ? r[0] + (r[1] - r[0]) * p : d);
+  const z = lerp(kb.z, 1.08) * (1 + 0.035 * Math.pow(Math.max(0, 1 - since / 0.4), 2));
+  const base = Math.max(W / im.width, H / im.height) * z;
+  const dw = im.width * base, dh = im.height * base;
+  const fx = lerp(kb.x, 0.5), fy = lerp(kb.y, 0.5);
+  let x = W / 2 - fx * dw + Math.sin(t * 0.8) * 3, y = H / 2 - fy * dh + Math.sin(t * 1.1) * 3;
+  x = Math.min(0, Math.max(W - dw, x)); y = Math.min(0, Math.max(H - dh, y));
+  g.drawImage(im, x, y, dw, dh);
+}
+
+window.init = async (timeline) => {
   TL = timeline;
+  await Promise.all((TL.photos || []).map(loadPhoto));
   heroPaper = makeHeroPaper(TL.paper || {});
   stationery = makeStationery(HX, HZ);
   notes = makeNotesStack(HX, HZ); notes.visible = false;
@@ -807,6 +830,10 @@ window.renderFrame = (t) => {
     return out.toDataURL('image/jpeg', 0.92);
   }
 
+  if (lastShotKey !== b.shotKey) { if (lastShotKey !== null) { pctx.drawImage(clean, 0, 0); shotChangeT = t; } lastShotKey = b.shotKey; }
+  if (b.img) {
+    drawPhoto(cctx, b.img, ease(p), t, b.kb || {}, t - shotStart);
+  } else {
   setMode(b.mode || 'day');
   const st = b.state || {};
   hiddenStudents = new Set(st.hide || []);
@@ -837,11 +864,11 @@ window.renderFrame = (t) => {
   if (since < 0.35) camera.fov *= 1 + 0.06 * Math.pow(1 - since / 0.35, 2);
   camera.updateProjectionMatrix();
   renderer.render(scene, camera);
-
-  if (lastShotKey !== b.shotKey) { if (lastShotKey !== null) { pctx.drawImage(clean, 0, 0); shotChangeT = t; } lastShotKey = b.shotKey; }
-  ctx.globalAlpha = 1;
-  ctx.drawImage(renderer.domElement, 0, 0);
   cctx.drawImage(renderer.domElement, 0, 0);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.drawImage(clean, 0, 0);
   const fade = window.noFade ? 1 : (t - shotChangeT) / 0.22;
   if (fade < 1) { ctx.globalAlpha = 1 - fade; ctx.drawImage(prevBuf, 0, 0); ctx.globalAlpha = 1; }
   vignette(b.mode === 'night' ? 0.55 : 0.35);

@@ -170,3 +170,18 @@ VIDEOS = {
         ],
     },
 }
+
+
+# Photo (from photos/<name>.jpg) behind each beat, in order.
+PHOTOS = {
+    "01-turn-the-page": ["hall", "desk", "paper", "stressed", "paper", "paper", "desk", "desk", "paper", "paper", "invig", "stack", None],
+    "02-same-hours": ["hall", "notes", "notes", "timed", "empty", "clock", "stressed", "invig", "results", "celebrate", "stack", None],
+    "03-3am": ["night", "night", "empty", "paper", "paper", "invig", "clock", "hall", None],
+    "04-the-pattern": ["board", "board", "paper", "paper", "paper", "timed", "board", "stack", None],
+    "05-mock-season": ["empty", "clock", "stressed", "timed", "desk", "invig", "celebrate", None],
+}
+for _name, _imgs in PHOTOS.items():
+    assert len(_imgs) == len(VIDEOS[_name]["beats"]), _name
+    for _b, _img in zip(VIDEOS[_name]["beats"], _imgs):
+        if _img:
+            _b["img"] = _img

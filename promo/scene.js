@@ -869,7 +869,7 @@ window.renderFrame = (t) => {
 
   ctx.globalAlpha = 1;
   ctx.drawImage(clean, 0, 0);
-  const fade = window.noFade ? 1 : (t - shotChangeT) / 0.22;
+  const fade = window.noFade ? 1 : (t - shotChangeT) / 0.1;
   if (fade < 1) { ctx.globalAlpha = 1 - fade; ctx.drawImage(prevBuf, 0, 0); ctx.globalAlpha = 1; }
   vignette(b.mode === 'night' ? 0.55 : 0.35);
   // overlays
@@ -890,7 +890,7 @@ window.renderFrame = (t) => {
   }
   if (b.mascot) {
     const m = b.mascot;
-    const age = t - b.start;
+    const age = t - (m.t0 ?? b.start);
     const s = (m.s || 0.9) * Math.min(1, 0.6 + age / 0.25 * 0.4);
     drawMascot(m.x, m.y, s, t, m.mood || 'happy', m.rot || 0);
   }

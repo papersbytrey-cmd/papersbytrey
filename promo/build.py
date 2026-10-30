@@ -21,6 +21,54 @@ LEAD, GAP, TAIL = 0.35, 0.18, 1.6
 PHOTO_FOCUS = {"clock": (0.5, 0.3), "board": (0.45, 0.4), "night": (0.6, 0.55), "results": (0.5, 0.55),
                "invig": (0.5, 0.55), "stressed": (0.55, 0.45), "celebrate": (0.55, 0.45), "paper": (0.45, 0.4)}
 
+# where a close-up should land on each photo
+PHOTO_CLOSE = {"hall": (0.5, 0.78), "desk": (0.62, 0.6), "clock": (0.5, 0.2), "night": (0.62, 0.62),
+               "results": (0.55, 0.66), "celebrate": (0.6, 0.42), "stressed": (0.55, 0.52), "notes": (0.42, 0.3),
+               "timed": (0.5, 0.28), "invig": (0.5, 0.5), "board": (0.45, 0.35), "stack": (0.55, 0.5),
+               "paper": (0.55, 0.42), "empty": (0.5, 0.65)}
+# related b-roll a cut may switch to, so the visuals don't sit on one photo
+PHOTO_ALT = {"hall": "invig", "invig": "hall", "empty": "hall", "desk": "paper", "paper": "desk",
+             "stack": "paper", "timed": "stack", "clock": "stressed", "board": "paper"}
+HI_RES = {"paper", "notes", "timed", "celebrate", "stack", "stressed"}
+CUT_EVERY = 1.5
+
+
+def framing(img, k):
+    fx, fy = PHOTO_FOCUS.get(img, (0.5, 0.5))
+    cx, cy = PHOTO_CLOSE.get(img, (fx, fy))
+    close = 1.48 if img in HI_RES else 1.32
+    v = k % 3
+    if v == 0:   # wide, gentle push in
+        return {"z": [1.02, 1.10], "x": [fx, fx], "y": [fy, fy - 0.01]}
+    if v == 1:   # close-up on the detail
+        return {"z": [close, close + 0.06], "x": [cx - 0.01, cx + 0.01], "y": [cy, cy]}
+    d = 0.04 if k % 2 else -0.04  # medium, sideways drift
+    return {"z": [1.22, 1.26], "x": [(fx + cx) / 2 - d, (fx + cx) / 2 + d], "y": [(fy + cy) / 2, (fy + cy) / 2]}
+
+
+def split_cuts(beats):
+    """Break each photo beat into ~1.5s cuts alternating wide / close / b-roll framings."""
+    out, cut = [], 0
+    for b in beats:
+        if not b.get("img"):
+            out.append(b); continue
+        dur = b["end"] - b["start"]
+        nseg = max(1, round(dur / CUT_EVERY))
+        for k in range(nseg):
+            c = dict(b)
+            c["start"] = b["start"] + k * dur / nseg
+            c["end"] = b["end"] if k == nseg - 1 else b["start"] + (k + 1) * dur / nseg
+            img = b["img"]
+            if k % 3 == 2 and img in PHOTO_ALT:
+                img = PHOTO_ALT[img]
+            cut += 1
+            c["img"], c["shotKey"], c["kb"] = img, f"{img}-cut{cut}", framing(img, cut)
+            if "mascot" in b:
+                c["mascot"] = {**b["mascot"], "t0": b["start"]}
+            out.append(c)
+    return out
+
+
 _kokoro = None
 def tts(text):
     global _kokoro
@@ -73,48 +121,59 @@ def lowpass(x, cutoff):
     return lfilter([1 - a], [1, -a], x)
 
 def music(dur, seed=0, dark=False):
-    """Clean underscore: soft pad + felt-piano arpeggio + low pulse, light reverb. No noise sources."""
+    """Upbeat, bright underscore: bouncy marimba, bass, soft kick and bells in C major. No noise sources."""
     n = int(dur * SR)
     out = np.zeros(n)
-    bpm = 84; beat = 60 / bpm; bar = beat * 4
-    prog = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]]  # Am F C G
-    if dark:
-        prog = [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]]  # Am F Dm E
+    bpm = 116; beat = 60 / bpm; bar = beat * 4
+    prog = [[60, 64, 67], [55, 59, 62], [57, 60, 64], [53, 57, 60]]  # C G Am F
+
+    def put(x, s0, gain):
+        if s0 >= n: return
+        e = min(n, s0 + len(x)); out[s0:e] += x[: e - s0] * gain
+
+    def marimba(f, ln=0.5):
+        t2 = np.arange(int(ln * SR)) / SR
+        e = np.minimum(1, t2 / 0.004) * np.exp(-t2 * 9)
+        return e * (np.sin(2 * np.pi * f * t2) + 0.3 * np.exp(-t2 * 20) * np.sin(2 * np.pi * 4 * f * t2))
+
+    def bell(f):
+        t2 = np.arange(int(1.2 * SR)) / SR
+        e = np.minimum(1, t2 / 0.003) * np.exp(-t2 * 4)
+        return e * (np.sin(2 * np.pi * f * t2) + 0.4 * np.sin(2 * np.pi * 2.76 * f * t2) * np.exp(-t2 * 8))
+
+    def kick():
+        t2 = np.arange(int(0.25 * SR)) / SR
+        return np.sin(2 * np.pi * (50 + 90 * np.exp(-t2 * 35)) * t2) * np.exp(-t2 * 14)
+
+    def bass(f, ln):
+        t2 = np.arange(int(ln * SR)) / SR
+        e = np.minimum(1, t2 / 0.01) * np.minimum(1, (ln - t2) / 0.05) * np.exp(-t2 * 1.5)
+        return e * (np.sin(2 * np.pi * f * t2) + 0.2 * np.sin(2 * np.pi * 2 * f * t2))
+
+    pattern = [0, 1, 2, 1, 0, 2, 1, 2]  # bouncy 8th-note marimba
     for bi in range(int(dur / bar) + 1):
         ch = prog[bi % 4]
         s0 = int(bi * bar * SR)
         if s0 >= n: break
-        ln = min(n - s0, int((bar + 1.0) * SR)); tt = np.arange(ln) / SR
-        env = np.minimum(1, tt / 1.2) * np.clip((bar + 1.0 - tt) / 1.0, 0, 1)
-        pad = np.zeros(ln)
-        for m in [ch[0] - 12] + ch:
-            f = note(m)
-            pad += np.sin(2 * np.pi * f * tt) + 0.25 * np.sin(2 * np.pi * 2 * f * tt + 0.3)
-        out[s0:s0 + ln] += pad * env * 0.035
-        # felt piano: quarter-note arpeggio an octave up, soft attack
-        arp = [ch[0], ch[2], ch[1] + 12, ch[2]]
-        for k in range(4):
-            ps = s0 + int(k * beat * SR)
-            if ps >= n: break
-            m = arp[k] + 12; f = note(m)
-            pl = min(int(1.6 * SR), n - ps); t2 = np.arange(pl) / SR
-            e = np.minimum(1, t2 / 0.008) * np.exp(-t2 * 2.8)
-            tone = np.sin(2 * np.pi * f * t2) + 0.35 * np.exp(-t2 * 3) * np.sin(2 * np.pi * 2 * f * t2) + 0.1 * np.exp(-t2 * 6) * np.sin(2 * np.pi * 3 * f * t2)
-            out[ps:ps + pl] += tone * e * (0.07 if k == 0 else 0.05)
-        # low pulse from bar 3 on
-        if bi >= 2:
-            for k in (0, 2):
-                ps = s0 + int(k * beat * SR)
-                if ps >= n: continue
-                pl = min(int(0.6 * SR), n - ps); t2 = np.arange(pl) / SR
-                out[ps:ps + pl] += np.sin(2 * np.pi * 55 * t2) * np.minimum(1, t2 / 0.02) * np.exp(-t2 * 6) * 0.12
-    # small smooth reverb
-    ir_t = np.arange(int(1.8 * SR)) / SR
-    ir = np.random.default_rng(seed).standard_normal(len(ir_t)) * np.exp(-ir_t * 3.5)
-    ir = lowpass(ir, 3000); ir /= np.abs(ir).sum() / 6
+        for k in range(8):
+            m = ch[pattern[k]] + 12 + (12 if k in (3, 7) else 0)
+            put(marimba(note(m)), s0 + int(k * beat / 2 * SR), 0.09 if k % 2 == 0 else 0.06)
+        # bass: root on 1, fifth on the "and" of 2, root on 3
+        root = ch[0] - 24
+        put(bass(note(root), beat * 1.4), s0, 0.18)
+        put(bass(note(root + 7), beat * 0.45), s0 + int(1.5 * beat * SR), 0.14)
+        put(bass(note(root), beat * 1.4), s0 + int(2 * beat * SR), 0.18)
+        if bi >= 1:
+            for k in range(4):
+                put(kick(), s0 + int(k * beat * SR), 0.22)
+        if bi % 2 == 0:
+            put(bell(note(ch[2] + 24)), s0, 0.05)
+    ir_t = np.arange(int(1.2 * SR)) / SR
+    ir = np.random.default_rng(seed).standard_normal(len(ir_t)) * np.exp(-ir_t * 5)
+    ir = lowpass(ir, 3500); ir /= np.abs(ir).sum() / 5
     from scipy.signal import fftconvolve
     wet = fftconvolve(out, ir)[:n]
-    return out * 0.8 + wet * 0.35
+    return out * 0.85 + wet * 0.25
 
 
 def whoosh(rng, dur=0.45):
@@ -188,8 +247,9 @@ def build(name, spec, render=True):
     beats[0]["start"] = 0.0
     duration = beats[-1]["end"]
     hook_until = min(beats[0]["end"], 3.2) if spec.get("hook") else 0
-    photos = sorted({x["img"] for x in beats if x.get("img")})
-    tl = {"photos": photos, "fps": FPS, "duration": duration, "beats": beats,
+    vis = split_cuts(beats)
+    photos = sorted({x["img"] for x in vis if x.get("img")})
+    tl = {"photos": photos, "fps": FPS, "duration": duration, "beats": vis,
           "hook": {"text": spec["hook"], "until": hook_until} if spec.get("hook") else None,
           "paper": spec.get("paper", {"qnum": "14", "lines": Q_PARAS}),
           "grade": spec.get("grade", 8), "end": spec.get("end", {})}
